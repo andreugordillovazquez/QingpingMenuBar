@@ -19,18 +19,17 @@ actor QingpingAPIClient {
 
     private var cachedToken: String?
     private var tokenExpiry: Date = .distantPast
-    private var session: URLSession
+    private let session: URLSession
 
     init() {
-        self.session = URLSession(configuration: .ephemeral)
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 30
+        config.urlCache = nil
+        config.httpCookieStorage = nil
+        self.session = URLSession(configuration: config)
     }
 
-    /// Creates a fresh URLSession, discarding any stale connections (e.g. after wake from sleep).
-    func resetSession() {
-        session.invalidateAndCancel()
-        session = URLSession(configuration: .ephemeral)
-        cachedToken = nil
-    }
 
     // MARK: - Public API
 
@@ -102,7 +101,7 @@ actor QingpingAPIClient {
                 URLQueryItem(name: "limit", value: "200"),
             ]
 
-            var request = URLRequest(url: components.url!)
+            var request = URLRequest(url: components.url!, timeoutInterval: 30)
             request.httpMethod = "GET"
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 

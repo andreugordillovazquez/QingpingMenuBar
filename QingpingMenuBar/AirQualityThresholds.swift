@@ -17,7 +17,7 @@ enum QualityLevel: String {
     var color: Color {
         switch self {
         case .good:      return .green
-        case .moderate:  return .yellow
+        case .moderate:  return Color(red: 0.8, green: 0.65, blue: 0.0)
         case .poor:      return .orange
         case .veryPoor:  return .red
         }
