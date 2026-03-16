@@ -1,11 +1,13 @@
 // AirQualityViewModel.swift
-// Central state manager for the app. Owns the API client, drives 60-second polling,
-// and publishes all observable state that the menu bar label and popover consume.
+// Central state manager for the app. Supports two data sources:
+// - Cloud API: polls the Qingping REST API every 60 seconds (requires credentials)
+// - BLE: passively scans for device advertisements every ~5-10 seconds (no cloud needed)
 // Uses @Observable (not ObservableObject) for Swift 6.2 compatibility.
 
 import Foundation
 import SwiftUI
 import AppKit
+import CoreBluetooth
 
 @Observable
 @MainActor
@@ -28,26 +30,35 @@ final class AirQualityViewModel {
     var menuBarMetric: MenuBarMetric = MenuBarMetric.from(stored: MenuBarMetricSetting.metric)
     var temperatureUnit: TemperatureUnit = .current
     var isDeviceOffline: Bool = false
+    var dataSource: DataSource = DataSource.from(stored: DataSourceSetting.source) {
+        didSet { switchDataSource() }
+    }
+    var bluetoothState: CBManagerState = .unknown
 
-    /// Reading is considered stale if older than 15 minutes.
+    /// Reading is considered stale if older than 15 minutes (API) or 60 seconds (BLE).
     var isStale: Bool {
-        reading != .placeholder && Date().timeIntervalSince(reading.timestamp) > 900
+        guard reading != .placeholder else { return false }
+        let threshold: TimeInterval = dataSource == .ble ? 60 : 900
+        return Date().timeIntervalSince(reading.timestamp) > threshold
     }
 
     // MARK: - Private (not observed — won't trigger view redraws)
 
-    private let api = QingpingAPIClient()
+    private var api = QingpingAPIClient()
     private var timer: Timer?
+    private let bleScanner = QingpingBLEScanner()
     @ObservationIgnored private var deviceMac: String?
     @ObservationIgnored private var hasPushedDeviceSettings = false
     @ObservationIgnored private var lastHistoryFetch: Date = .distantPast
+    @ObservationIgnored private var lastBLEHistoryAppend: Date = .distantPast
 
     // MARK: - Lifecycle
 
     init() {
-        startPolling()
+        bleScanner.delegate = self
+        switchDataSource()
 
-        // Restart polling after wake from sleep — Timer doesn't survive sleep/wake cycles
+        // Restart after wake from sleep
         NotificationCenter.default.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
@@ -55,16 +66,46 @@ final class AirQualityViewModel {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                // Reset the HTTP session — stale connections don't survive sleep
-                await self.api.resetSession()
-                self.startPolling()
+                if self.dataSource == .cloudAPI {
+                    self.api = QingpingAPIClient()
+                    self.startPolling()
+                }
+                // BLE resumes automatically — CoreBluetooth handles reconnection
             }
         }
     }
 
-    // MARK: - Polling
+    // MARK: - Data Source Switching
 
-    /// Kicks off an immediate refresh and starts a repeating 60-second timer.
+    private func switchDataSource() {
+        DataSourceSetting.source = dataSource.rawValue
+
+        // Clear history to avoid mixing data from different sources
+        clearHistory()
+
+        if dataSource == .cloudAPI {
+            bleScanner.stopScanning()
+            api = QingpingAPIClient()
+            startPolling()
+        } else {
+            stopPolling()
+            errorMessage = nil
+            loadBLEHistory()
+            bleScanner.startScanning()
+        }
+    }
+
+    private func clearHistory() {
+        co2History = []
+        pm25History = []
+        pm10History = []
+        tempHistory = []
+        humidityHistory = []
+        lastHistoryFetch = .distantPast
+    }
+
+    // MARK: - Cloud API Polling
+
     func startPolling() {
         Task { await refresh() }
 
@@ -81,11 +122,11 @@ final class AirQualityViewModel {
         timer = nil
     }
 
-    // MARK: - Refresh
-
-    /// Fetches the latest reading from the API, updates state, and triggers
-    /// history fetch + device settings push if needed.
+    /// Fetches the latest reading from the cloud API.
     func refresh() async {
+        // In BLE mode, refresh just re-triggers scanning (no API call)
+        guard dataSource == .cloudAPI else { return }
+
         guard let appKey = CredentialsStore.appKey,
               let appSecret = CredentialsStore.appSecret else {
             errorMessage = "No API credentials configured. Open Settings to add them."
@@ -102,7 +143,6 @@ final class AirQualityViewModel {
             )
 
             let age = Date().timeIntervalSince(newReading.timestamp)
-            print("[QingpingMenuBar] Refresh: CO2=\(newReading.co2.map { "\(Int($0))" } ?? "nil") PM2.5=\(newReading.pm25.map { "\(Int($0))" } ?? "nil") Temp=\(newReading.temperature.map { String(format: "%.1f", $0) } ?? "nil") Humidity=\(newReading.humidity.map { String(format: "%.0f", $0) } ?? "nil") age=\(String(format: "%.0f", age))s offline=\(device.info.status?.offline ?? false)")
 
             reading = newReading
             deviceMac = device.info.mac
@@ -113,30 +153,35 @@ final class AirQualityViewModel {
                 ?? "Qingping Monitor"
             lastUpdated = .now
 
-            // On first successful fetch, push optimal device settings (once per app session)
-            if !hasPushedDeviceSettings {
-                hasPushedDeviceSettings = true
-                await pushOptimalDeviceSettings()
-            }
-
-            // Refresh 24h history at most every 10 minutes
-            if Date().timeIntervalSince(lastHistoryFetch) > 600 {
-                await fetchHistory()
-            }
         } catch {
             errorMessage = error.localizedDescription
         }
 
         isLoading = false
+
+        // Non-critical tasks — run after UI updates, failures won't show errors
+        if reading != .placeholder {
+            if !hasPushedDeviceSettings {
+                hasPushedDeviceSettings = true
+                await pushOptimalDeviceSettings()
+            }
+
+            let timeSinceLastFetch = Date().timeIntervalSince(lastHistoryFetch)
+            let age = lastUpdated.map { Date().timeIntervalSince($0) } ?? .infinity
+            if timeSinceLastFetch > 600 || age > 900 {
+                await fetchHistory()
+            }
+        }
     }
 
-    // MARK: - History
+    // MARK: - Cloud API History
 
-    /// Loads 24h of historical data and splits it into per-metric arrays for charting.
     func fetchHistory() async {
         guard let appKey = CredentialsStore.appKey,
               let appSecret = CredentialsStore.appSecret,
-              let mac = deviceMac else { return }
+              let mac = deviceMac else {
+            return
+        }
 
         do {
             let points = try await api.fetchHistory(
@@ -146,7 +191,6 @@ final class AirQualityViewModel {
             )
             lastHistoryFetch = .now
 
-            // Split raw history into per-metric arrays
             co2History = points.compactMap { p in
                 guard let ts = p.timestamp?.value, let v = p.co2?.value else { return nil }
                 return HistoryPoint(timestamp: Date(timeIntervalSince1970: TimeInterval(ts)), value: v)
@@ -168,7 +212,6 @@ final class AirQualityViewModel {
                 return HistoryPoint(timestamp: Date(timeIntervalSince1970: TimeInterval(ts)), value: v)
             }
 
-            // Cap each array to prevent unbounded memory growth over long runtimes
             let maxPoints = 500
             if co2History.count > maxPoints { co2History = Array(co2History.suffix(maxPoints)) }
             if pm25History.count > maxPoints { pm25History = Array(pm25History.suffix(maxPoints)) }
@@ -176,14 +219,65 @@ final class AirQualityViewModel {
             if tempHistory.count > maxPoints { tempHistory = Array(tempHistory.suffix(maxPoints)) }
             if humidityHistory.count > maxPoints { humidityHistory = Array(humidityHistory.suffix(maxPoints)) }
         } catch {
-            print("[QingpingMenuBar] Failed to load history: \(error.localizedDescription)")
+        } catch {
+            // History fetch failed silently — current reading still works
         }
+    }
+
+    // MARK: - BLE History (persisted to disk)
+
+    /// Loads BLE history from Application Support on launch.
+    private func loadBLEHistory() {
+        co2History = HistoryStore.pruned(HistoryStore.load(metric: "co2"))
+        pm25History = HistoryStore.pruned(HistoryStore.load(metric: "pm25"))
+        pm10History = HistoryStore.pruned(HistoryStore.load(metric: "pm10"))
+        tempHistory = HistoryStore.pruned(HistoryStore.load(metric: "temp"))
+        humidityHistory = HistoryStore.pruned(HistoryStore.load(metric: "humidity"))
+    }
+
+    /// Saves all BLE history arrays to disk.
+    private func saveBLEHistory() {
+        HistoryStore.save(metric: "co2", points: co2History)
+        HistoryStore.save(metric: "pm25", points: pm25History)
+        HistoryStore.save(metric: "pm10", points: pm10History)
+        HistoryStore.save(metric: "temp", points: tempHistory)
+        HistoryStore.save(metric: "humidity", points: humidityHistory)
+    }
+
+    /// Appends the current BLE reading to history arrays and persists to disk.
+    /// Throttled to once per 30 seconds to avoid excessive writes.
+    private func appendBLEHistory(_ reading: AirQualityReading) {
+        let now = Date()
+        guard now.timeIntervalSince(lastBLEHistoryAppend) >= 30 else { return }
+        lastBLEHistoryAppend = now
+
+        let maxPoints = 500
+        if let v = reading.co2 {
+            co2History.append(HistoryPoint(timestamp: now, value: v))
+            if co2History.count > maxPoints { co2History.removeFirst() }
+        }
+        if let v = reading.pm25 {
+            pm25History.append(HistoryPoint(timestamp: now, value: v))
+            if pm25History.count > maxPoints { pm25History.removeFirst() }
+        }
+        if let v = reading.pm10 {
+            pm10History.append(HistoryPoint(timestamp: now, value: v))
+            if pm10History.count > maxPoints { pm10History.removeFirst() }
+        }
+        if let v = reading.temperature {
+            tempHistory.append(HistoryPoint(timestamp: now, value: v))
+            if tempHistory.count > maxPoints { tempHistory.removeFirst() }
+        }
+        if let v = reading.humidity {
+            humidityHistory.append(HistoryPoint(timestamp: now, value: v))
+            if humidityHistory.count > maxPoints { humidityHistory.removeFirst() }
+        }
+
+        saveBLEHistory()
     }
 
     // MARK: - Device Settings
 
-    /// Sets the device to report every 10 min and record every 1 min (fastest allowed).
-    /// Only called once per app session on first successful data fetch.
     private func pushOptimalDeviceSettings() async {
         guard let appKey = CredentialsStore.appKey,
               let appSecret = CredentialsStore.appSecret,
@@ -198,7 +292,39 @@ final class AirQualityViewModel {
                 collectInterval: 60
             )
         } catch {
-            print("[QingpingMenuBar] Failed to set device intervals: \(error.localizedDescription)")
+            // Device settings push failed — not critical
+        }
+    }
+}
+
+// MARK: - BLE Scanner Delegate
+
+extension AirQualityViewModel: @preconcurrency QingpingBLEScannerDelegate {
+
+    func scanner(_ scanner: QingpingBLEScanner, didReceiveReading newReading: AirQualityReading, deviceName name: String?) {
+        reading = newReading
+        isDeviceOffline = false
+        lastUpdated = .now
+        errorMessage = nil
+
+        if let name { deviceName = name }
+
+        appendBLEHistory(newReading)
+    }
+
+    func scanner(_ scanner: QingpingBLEScanner, didUpdateState state: CBManagerState) {
+        bluetoothState = state
+        switch state {
+        case .poweredOff:
+            errorMessage = "Bluetooth is turned off."
+        case .unauthorized:
+            errorMessage = "Bluetooth access not authorized. Check System Settings > Privacy."
+        case .unsupported:
+            errorMessage = "This Mac does not support Bluetooth Low Energy."
+        case .poweredOn:
+            errorMessage = nil
+        default:
+            break
         }
     }
 }

@@ -8,20 +8,32 @@ A lightweight macOS menu bar app for monitoring your **Qingping Air Monitor Lite
 
 - Shows your current CO₂, PM2.5, PM10, temperature, humidity, and battery level in a clean popover
 - Displays the selected metric (CO₂ by default) directly in your menu bar for at-a-glance monitoring
-- 24-hour sparkline charts for every metric, color-coded by air quality thresholds
+- Smooth sparkline charts for every metric, color-coded by air quality thresholds
 - Tap any metric to expand an interactive chart with hover cursor showing exact values and timestamps
-- Trend arrows (↗ ↘) show whether each metric is rising or falling over the last hour
-- Relative timestamps ("3 min ago") with a stale data warning when readings are older than 15 minutes
-- Device offline detection with visual indicator
+- Trend arrows show whether each metric is rising or falling
+- Relative timestamps ("3 min ago") with stale data and device offline warnings
 - °C / °F temperature unit toggle
-- Automatically configures your device for the fastest possible cloud reporting (10 min upload, 1 min recording)
 - Launch at login support
+
+## Data sources
+
+The app supports two ways to get data from your device:
+
+### Bluetooth (default)
+
+Reads sensor data directly from BLE advertisements — **no cloud, no credentials, no internet needed**. Just launch the app near your device and it works. Updates every 5–10 seconds. History is built from live readings and persisted to disk.
+
+### Cloud API (optional)
+
+Polls the Qingping cloud API every 60 seconds. Requires free API credentials from [developer.qingping.co](https://developer.qingping.co/personal/permissionApply). Useful if your device is out of Bluetooth range. The API can be slow or unreliable depending on region.
+
+You can switch between data sources in **Settings > Data Source**.
 
 ## Color thresholds
 
 The sparkline charts, values, and trend arrows change color based on indoor air quality guidelines:
 
-| Metric | Good (green) | Moderate (yellow) | Poor (orange) | Very Poor (red) |
+| Metric | Good (green) | Moderate (amber) | Poor (orange) | Very Poor (red) |
 |--------|-------------|-------------------|---------------|-----------------|
 | CO₂ | < 800 ppm | 800–1000 | 1000–1500 | > 1500 |
 | PM2.5 | < 12 µg/m³ | 12–35 | 35–55 | > 55 |
@@ -34,23 +46,29 @@ The overall quality badge in the header shows the worst level across all metrics
 ## Requirements
 
 - macOS 26 (Tahoe) or later
-- A [Qingping Air Monitor Lite](https://www.qingping.co/air-monitor-lite/overview) (model CGDN1) connected to WiFi
-- The device must be in **Qingping mode** (not HomeKit mode) via the Qingping+ app
-- Qingping developer API credentials (free — see setup below)
+- A [Qingping Air Monitor Lite](https://www.qingping.co/air-monitor-lite/overview) (model CGDN1)
+- The device must be set up via the **Qingping+** app first (either Qingping mode or HomeKit mode — BLE works with both)
 
 ## Setup
 
-### 1. Set up your device
+### Bluetooth (recommended)
 
-Download the **Qingping+** app ([iOS](https://apps.apple.com/app/qingping/id1344636968) / [Android](https://play.google.com/store/apps/details?id=com.cleargrass.app.air)) and add your Air Monitor Lite. Make sure the device is connected to WiFi and set to Qingping mode.
+1. Set up your device with the **Qingping+** app ([iOS](https://apps.apple.com/app/qingping/id1344636968) / [Android](https://play.google.com/store/apps/details?id=com.cleargrass.app.air))
+2. Install and launch QingpingMenuBar
+3. Grant Bluetooth permission when prompted
 
-### 2. Get your API credentials
+That's it — the app will automatically detect your device and start showing data.
 
-1. Go to [developer.qingping.co](https://developer.qingping.co/personal/permissionApply)
-2. Register or log in with your Qingping account
-3. You'll get an **App Key** and **App Secret** — keep these handy
+### Cloud API (optional)
 
-### 3. Install the app
+If you need Cloud API mode (device out of BLE range):
+
+1. Make sure the device is connected to WiFi and set to **Qingping mode** (not HomeKit) in the Qingping+ app
+2. Go to [developer.qingping.co](https://developer.qingping.co/personal/permissionApply) and get your **App Key** and **App Secret**
+3. In the app, go to **Settings > Data Source > Cloud API**
+4. Enter your credentials and click **Save**
+
+### Install
 
 **Option A: Download the release**
 
@@ -59,57 +77,40 @@ Download the latest `.dmg` from the [Releases](../../releases) page. Open it, dr
 **Option B: Build from source**
 
 ```bash
-git clone https://github.com/yourusername/QingpingMenuBar.git
+git clone https://github.com/andreugordillovazquez/QingpingMenuBar.git
 cd QingpingMenuBar
 open QingpingMenuBar.xcodeproj
 ```
 
 Build and run from Xcode (requires Xcode 26+).
 
-### 4. Enter your credentials
-
-Click the menu bar icon → click **Settings** → paste your App Key and App Secret → click **Save**.
-
-That's it. The app will start fetching data immediately.
-
-## How it works
-
-The app polls the Qingping cloud API every minute. The device uploads new readings to the cloud every 10 minutes (the app automatically configures this on first launch). Historical data for the last 24 hours is loaded on startup and refreshed every 10 minutes.
-
-Your API credentials are stored securely in the macOS Keychain — they never leave your machine.
-
 ## Settings
 
 Click the Settings button in the popover footer to access:
 
-- **API Credentials** — your Qingping App Key and Secret (shown as "API connected" once saved)
-- **Menu Bar Metric** — choose which metric to display in the menu bar (CO₂, PM2.5, PM10, Temperature, or Humidity)
+- **Data Source** — switch between Bluetooth and Cloud API
+- **API Credentials** — your Qingping App Key and Secret (Cloud API mode only)
+- **Menu Bar Metric** — choose which metric to display in the menu bar
 - **Temperature Unit** — switch between °C and °F
 - **Launch at login** — start the app automatically when you log in
 
 ## Privacy & security
 
-- API credentials are stored in the macOS Keychain, scoped to this app's sandbox
-- All API communication is over HTTPS — no plaintext HTTP
-- No telemetry, analytics, or data collection — the app only talks to the Qingping API
+- **BLE mode**: all data stays on your Mac — no network calls, no cloud
+- **Cloud API mode**: credentials are stored in the macOS Keychain, scoped to this app's sandbox. All communication is over HTTPS
+- No telemetry, analytics, or data collection
 - App Sandbox and Hardened Runtime are enabled
-- API response bodies are never logged or displayed to the user
+- BLE data is unencrypted broadcast — any nearby device can read it (this is how the Qingping protocol works)
 
 ## Tech stack
 
 - SwiftUI with `MenuBarExtra` (`.window` style)
-- Swift Charts for interactive expanded charts
+- CoreBluetooth for passive BLE advertisement scanning
+- Swift Charts for sparklines and interactive expanded charts
 - Swift concurrency (`async/await`, actors)
 - `@Observable` (Observation framework)
 - macOS Keychain for credential storage
-- Canvas API for threshold-colored sparkline charts
 - Qingping Cloud API (OAuth2 + REST)
-
-## Data freshness
-
-The Qingping Air Monitor Lite uploads data to the cloud at a configurable interval. This app sets it to the minimum: every 10 minutes for uploads, every 1 minute for sensor recording. The cloud API always returns the latest uploaded reading — polling faster than 10 minutes won't yield newer data, but ensures you catch new uploads promptly.
-
-If the reading is older than 15 minutes, a yellow warning appears. If the device goes offline, a red "Device offline" indicator is shown.
 
 ## License
 
@@ -117,8 +118,9 @@ MIT
 
 ## Disclaimer
 
-This project is not affiliated with, endorsed by, or sponsored by Qingping or Cleargrass. "Qingping" is a trademark of Beijing Qingping Technology Co., Ltd. This app uses the publicly available Qingping Developer API.
+This project is not affiliated with, endorsed by, or sponsored by Qingping or Cleargrass. "Qingping" is a trademark of Beijing Qingping Technology Co., Ltd. This app uses the publicly available Qingping Developer API and reads publicly broadcast BLE advertisements.
 
 ## Acknowledgments
 
 - [Qingping](https://www.qingping.co/) for making affordable, hackable air quality monitors with an open API
+- [qingping-ble](https://github.com/Bluetooth-Devices/qingping-ble) for documenting the BLE advertisement format

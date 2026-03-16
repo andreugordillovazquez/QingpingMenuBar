@@ -42,6 +42,7 @@ struct MenuBarPopoverView: View {
                 .padding(.vertical, 10)
         }
         .frame(width: 320)
+        .background(.regularMaterial)
     }
 
     // MARK: - Header
@@ -101,7 +102,7 @@ struct MenuBarPopoverView: View {
     // MARK: - Sensor List with Sparklines
 
     private var sensorList: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             if let co2 = viewModel.reading.co2 {
                 SensorRow(
                     title: "CO₂", icon: "carbon.dioxide.cloud",
@@ -169,11 +170,29 @@ struct MenuBarPopoverView: View {
     @State private var editingCredentials: Bool = false
     @State private var selectedMetric: MenuBarMetric = MenuBarMetric.from(stored: MenuBarMetricSetting.metric)
     @State private var selectedTempUnit: TemperatureUnit = .current
+    @State private var selectedDataSource: DataSource = DataSource.from(stored: DataSourceSetting.source)
 
     private var settingsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Credentials
-            if CredentialsStore.hasCredentials && !editingCredentials {
+            // Data source
+            HStack {
+                Text("Data Source")
+                    .font(.caption)
+                Spacer()
+                Picker("Data Source", selection: $selectedDataSource) {
+                    ForEach(DataSource.allCases) { source in
+                        Text(source.label).tag(source)
+                    }
+                }
+                .labelsHidden()
+                .font(.caption)
+            }
+            .onChange(of: selectedDataSource) { _, newValue in
+                viewModel.dataSource = newValue
+            }
+
+            // Credentials (only shown in Cloud API mode)
+            if selectedDataSource == .cloudAPI, CredentialsStore.hasCredentials && !editingCredentials {
                 HStack {
                     Label("API connected", systemImage: "checkmark.circle.fill")
                         .font(.caption)
@@ -185,7 +204,7 @@ struct MenuBarPopoverView: View {
                     .font(.caption)
                     .buttonStyle(.borderless)
                 }
-            } else {
+            } else if selectedDataSource == .cloudAPI {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("API Credentials")
                         .font(.caption.weight(.semibold))
@@ -279,7 +298,7 @@ struct MenuBarPopoverView: View {
                             try SMAppService.mainApp.unregister()
                         }
                     } catch {
-                        print("[QingpingMenuBar] Launch at login error: \(error)")
+                        // Launch at login toggle failed — revert UI
                         launchAtLogin = SMAppService.mainApp.status == .enabled
                     }
                 }
@@ -302,14 +321,25 @@ struct MenuBarPopoverView: View {
 
     private var footer: some View {
         HStack {
-            Button {
-                Task { await viewModel.refresh() }
-            } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
-                    .font(.caption)
+            if viewModel.dataSource == .cloudAPI {
+                Button {
+                    Task { await viewModel.refresh() }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .disabled(viewModel.isLoading)
+            } else {
+                // BLE mode indicator
+                HStack(spacing: 4) {
+                    Image(systemName: "antenna.radiowaves.left.and.right")
+                        .font(.caption2)
+                    Text("Live")
+                        .font(.caption)
+                }
+                .foregroundStyle(.green)
             }
-            .buttonStyle(.borderless)
-            .disabled(viewModel.isLoading)
 
             Spacer()
 
@@ -400,8 +430,8 @@ struct SensorRow: View {
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.vertical, 6)
+        .background(.fill.quaternary, in: RoundedRectangle(cornerRadius: 8))
         .contentShape(Rectangle())
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.2)) {
@@ -506,19 +536,28 @@ struct ExpandedChartView: View {
             lineMarks
             cursorMarks
         }
+        .tint(.primary)
         .chartYScale(domain: yMin ... yMax)
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 3)) { value in
-                AxisValueLabel(format: .dateTime.hour().minute())
-                    .font(.system(size: 8))
-                    .foregroundStyle(.white.opacity(0.5))
+                AxisValueLabel {
+                    if let date = value.as(Date.self) {
+                        Text(date, format: .dateTime.hour().minute())
+                            .font(.system(size: 8))
+                            .foregroundColor(.primary.opacity(0.5))
+                    }
+                }
             }
         }
         .chartYAxis {
             AxisMarks(values: .automatic(desiredCount: 3)) { value in
-                AxisValueLabel()
-                    .font(.system(size: 8))
-                    .foregroundStyle(.white.opacity(0.5))
+                AxisValueLabel {
+                    if let num = value.as(Double.self) {
+                        Text(formatValue(num))
+                            .font(.system(size: 8))
+                            .foregroundColor(.primary.opacity(0.5))
+                    }
+                }
             }
         }
         .chartOverlay { proxy in
@@ -583,38 +622,65 @@ nonisolated struct ChartSegment {
 
 // MARK: - Sparkline View
 
-/// Compact line chart drawn with Canvas. Each segment between consecutive points
-/// is colored by its threshold level, giving a quick visual of quality over time.
+/// Compact line chart using Swift Charts with threshold-colored segments
+/// and Catmull-Rom interpolation for smooth curves. No axes — just the line.
 struct SparklineView: View {
     let points: [HistoryPoint]
     let thresholdColor: (Double) -> Color
 
+    private var yMin: Double {
+        let values = points.map(\.value)
+        let dataMin = values.min() ?? 0
+        let dataMax = values.max() ?? 1
+        let pad = max((dataMax - dataMin) * 0.3, 1)
+        return max(0, dataMin - pad)
+    }
+
+    private var yMax: Double {
+        let values = points.map(\.value)
+        let dataMin = values.min() ?? 0
+        let dataMax = values.max() ?? 1
+        let pad = max((dataMax - dataMin) * 0.3, 1)
+        return dataMax + pad
+    }
+
+    private var segments: [ChartSegment] {
+        guard points.count >= 2 else { return [] }
+        var result: [ChartSegment] = []
+        var currentColor = thresholdColor(points[0].value)
+        var currentPoints = [points[0]]
+
+        for i in 1..<points.count {
+            let color = thresholdColor(points[i].value)
+            if color != currentColor {
+                result.append(ChartSegment(color: currentColor, points: currentPoints))
+                currentColor = color
+                currentPoints = [points[i - 1]]
+            }
+            currentPoints.append(points[i])
+        }
+        result.append(ChartSegment(color: currentColor, points: currentPoints))
+        return result
+    }
+
     var body: some View {
-        GeometryReader { geo in
-            let values = points.map(\.value)
-            let minVal = values.min() ?? 0
-            let maxVal = values.max() ?? 1
-            let range = maxVal - minVal
-            let safeRange = range > 0 ? range : 1
-
-            Canvas { context, size in
-                guard points.count >= 2 else { return }
-
-                for i in 1..<points.count {
-                    let x0 = size.width * CGFloat(i - 1) / CGFloat(points.count - 1)
-                    let y0 = size.height * (1 - CGFloat((points[i - 1].value - minVal) / safeRange))
-                    let x1 = size.width * CGFloat(i) / CGFloat(points.count - 1)
-                    let y1 = size.height * (1 - CGFloat((points[i].value - minVal) / safeRange))
-
-                    var segment = Path()
-                    segment.move(to: CGPoint(x: x0, y: y0))
-                    segment.addLine(to: CGPoint(x: x1, y: y1))
-
-                    let color = thresholdColor(points[i].value)
-                    context.stroke(segment, with: .color(color), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+        Chart {
+            ForEach(Array(segments.enumerated()), id: \.offset) { idx, segment in
+                ForEach(segment.points) { point in
+                    LineMark(
+                        x: .value("Time", point.timestamp),
+                        y: .value("Value", point.value),
+                        series: .value("Segment", idx)
+                    )
+                    .foregroundStyle(segment.color)
+                    .lineStyle(StrokeStyle(lineWidth: 2))
+                    .interpolationMethod(.catmullRom)
                 }
             }
         }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .chartYScale(domain: yMin ... yMax)
     }
 }
 
@@ -737,6 +803,35 @@ enum TemperatureUnitSetting {
     private static let key = "temperatureUnit"
     static var unit: String {
         get { UserDefaults.standard.string(forKey: key) ?? "celsius" }
+        set { UserDefaults.standard.set(newValue, forKey: key) }
+    }
+}
+
+// MARK: - Data Source
+
+/// How the app gets sensor data from the device.
+enum DataSource: String, CaseIterable, Identifiable {
+    case cloudAPI = "cloudAPI"
+    case ble = "ble"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .cloudAPI: return "Cloud API"
+        case .ble:      return "Bluetooth"
+        }
+    }
+
+    static func from(stored: String) -> DataSource {
+        DataSource(rawValue: stored) ?? .ble
+    }
+}
+
+enum DataSourceSetting {
+    private static let key = "dataSource"
+    static var source: String {
+        get { UserDefaults.standard.string(forKey: key) ?? "ble" }
         set { UserDefaults.standard.set(newValue, forKey: key) }
     }
 }
