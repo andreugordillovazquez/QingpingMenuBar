@@ -1,4 +1,4 @@
-# Qingping Menu Bar
+# <img src="Images/icon.png" width="28"> Qingping Menu Bar
 
 A lightweight macOS menu bar app for monitoring your **Qingping Air Monitor Lite** (CGDN1) in real time.
 
