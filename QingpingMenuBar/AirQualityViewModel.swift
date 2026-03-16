@@ -142,8 +142,6 @@ final class AirQualityViewModel {
                 appSecret: appSecret
             )
 
-            let age = Date().timeIntervalSince(newReading.timestamp)
-
             reading = newReading
             deviceMac = device.info.mac
             isDeviceOffline = device.info.status?.offline ?? false
@@ -218,7 +216,6 @@ final class AirQualityViewModel {
             if pm10History.count > maxPoints { pm10History = Array(pm10History.suffix(maxPoints)) }
             if tempHistory.count > maxPoints { tempHistory = Array(tempHistory.suffix(maxPoints)) }
             if humidityHistory.count > maxPoints { humidityHistory = Array(humidityHistory.suffix(maxPoints)) }
-        } catch {
         } catch {
             // History fetch failed silently — current reading still works
         }
@@ -299,7 +296,7 @@ final class AirQualityViewModel {
 
 // MARK: - BLE Scanner Delegate
 
-extension AirQualityViewModel: @preconcurrency QingpingBLEScannerDelegate {
+extension AirQualityViewModel: QingpingBLEScannerDelegate {
 
     func scanner(_ scanner: QingpingBLEScanner, didReceiveReading newReading: AirQualityReading, deviceName name: String?) {
         reading = newReading
