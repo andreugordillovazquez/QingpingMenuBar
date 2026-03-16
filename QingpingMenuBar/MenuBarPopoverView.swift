@@ -77,10 +77,7 @@ struct MenuBarPopoverView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.yellow)
                         }
-                        Text(viewModel.reading.timestamp, style: .relative)
-                            .font(.caption)
-                            .foregroundStyle(viewModel.isStale ? .yellow : .secondary)
-                        + Text(" ago")
+                        Text("\(viewModel.reading.timestamp, style: .relative) ago")
                             .font(.caption)
                             .foregroundStyle(viewModel.isStale ? .yellow : .secondary)
                     }
