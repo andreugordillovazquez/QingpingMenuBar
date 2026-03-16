@@ -2,7 +2,7 @@
 
 A lightweight macOS menu bar app for monitoring your **Qingping Air Monitor Lite** (CGDN1) in real time.
 
-![Screenshot](screenshots/app.png)
+![Screenshot](Images/app.png)
 
 ## What it does
 
