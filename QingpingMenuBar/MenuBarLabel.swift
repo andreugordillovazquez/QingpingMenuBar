@@ -1,3 +1,8 @@
+// MenuBarLabel.swift
+// The view displayed directly in the macOS menu bar. Shows an SF Symbol icon
+// for the selected metric plus its current value. Switches to error/offline
+// icons when the device is unreachable.
+
 import SwiftUI
 
 struct MenuBarLabel: View {
@@ -17,6 +22,7 @@ struct MenuBarLabel: View {
         viewModel.menuBarMetric
     }
 
+    /// Picks the appropriate SF Symbol based on device state and selected metric.
     private var iconName: String {
         if viewModel.isDeviceOffline {
             return "wifi.slash"
@@ -33,6 +39,7 @@ struct MenuBarLabel: View {
         }
     }
 
+    /// Formats the current value for the selected metric. Returns nil if no data yet.
     private var valueText: String? {
         switch metric {
         case .co2:

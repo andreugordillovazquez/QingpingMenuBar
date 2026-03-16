@@ -1,7 +1,13 @@
+// AirQualityThresholds.swift
+// Defines indoor air quality levels and the thresholds for each metric.
+// Used to color-code values, sparklines, and the overall quality badge.
+// Thresholds are based on common indoor air quality guidelines (WHO, EPA).
+
 import SwiftUI
 
 // MARK: - Quality Level
 
+/// Four-tier quality classification used across all metrics.
 enum QualityLevel: String {
     case good = "Good"
     case moderate = "Moderate"
@@ -29,7 +35,7 @@ enum QualityLevel: String {
 
 // MARK: - Thresholds
 
-/// Evaluates air quality levels based on common indoor guidelines.
+/// Static threshold evaluators for each sensor metric.
 enum AirQualityThresholds {
 
     static func co2Level(_ ppm: Double) -> QualityLevel {
@@ -76,7 +82,7 @@ enum AirQualityThresholds {
         }
     }
 
-    /// Overall quality based on the worst individual metric.
+    /// Returns the worst quality level across all available metrics.
     static func overallLevel(reading: AirQualityReading) -> QualityLevel {
         var worst: QualityLevel = .good
 
@@ -100,8 +106,9 @@ enum AirQualityThresholds {
     }
 }
 
-// MARK: - Comparable conformance for QualityLevel
+// MARK: - Comparable
 
+/// Allows using max() to find the worst quality level.
 extension QualityLevel: Comparable {
     private var severity: Int {
         switch self {

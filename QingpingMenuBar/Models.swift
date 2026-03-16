@@ -1,3 +1,9 @@
+// Models.swift
+// Codable data models matching the Qingping Cloud API JSON responses, plus
+// app-level types used for UI display (AirQualityReading, HistoryPoint).
+// All types are `nonisolated` and `Sendable` so they can cross actor boundaries
+// freely (the API client is its own actor, the UI is MainActor).
+
 import Foundation
 
 // MARK: - OAuth Token Response
@@ -60,6 +66,8 @@ nonisolated struct ProductInfo: Codable, Sendable {
     }
 }
 
+/// Raw sensor data from the device. Each field is wrapped in SensorValue
+/// because the API returns `{ "value": 21.1 }` rather than bare numbers.
 nonisolated struct DeviceData: Codable, Sendable {
     let timestamp: SensorValue<Int>?
     let battery: SensorValue<Double>?
@@ -71,6 +79,7 @@ nonisolated struct DeviceData: Codable, Sendable {
     let tvoc: SensorValue<Double>?
 }
 
+/// Generic wrapper for the API's `{ "value": T }` pattern.
 nonisolated struct SensorValue<T: Codable & Sendable>: Codable, Sendable {
     let value: T
 }
@@ -93,6 +102,7 @@ nonisolated struct HistoryDataPoint: Codable, Sendable {
 
 // MARK: - Unified Reading
 
+/// Flattened representation of a single device reading, used by the UI layer.
 nonisolated struct AirQualityReading: Equatable, Sendable {
     let timestamp: Date
     let temperature: Double?
@@ -103,6 +113,7 @@ nonisolated struct AirQualityReading: Equatable, Sendable {
     let battery: Double?
     let tvoc: Double?
 
+    /// Empty reading used before any data is fetched.
     static let placeholder = AirQualityReading(
         timestamp: .now,
         temperature: nil,
@@ -117,6 +128,8 @@ nonisolated struct AirQualityReading: Equatable, Sendable {
 
 // MARK: - History Point (for charts)
 
+/// A single data point for sparkline and expanded charts.
+/// Equality ignores `id` so two points with the same timestamp+value are equal.
 nonisolated struct HistoryPoint: Identifiable, Equatable, Sendable {
     let id = UUID()
     let timestamp: Date

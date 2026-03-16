@@ -1,13 +1,19 @@
+// CredentialsStore.swift
+// Secure storage for Qingping API credentials using the macOS Keychain.
+// Credentials are scoped to the app's bundle ID via the service name, which
+// ensures they stay accessible under App Sandbox. Includes a one-time migration
+// from the legacy service name used in early development.
+
 import Foundation
 import Security
 
-/// Stores Qingping API credentials in the macOS Keychain.
 enum CredentialsStore {
 
+    /// Must match the app's bundle identifier for Keychain sandbox compatibility.
     private static let service = "com.andreugordillo.QingpingMenuBar"
     private static let legacyService = "com.qingping.menubar"
 
-    // MARK: - App Key
+    // MARK: - Public Interface
 
     static var appKey: String? {
         get { read(account: "appKey") }
@@ -20,8 +26,6 @@ enum CredentialsStore {
         }
     }
 
-    // MARK: - App Secret
-
     static var appSecret: String? {
         get { read(account: "appSecret") }
         set {
@@ -33,12 +37,12 @@ enum CredentialsStore {
         }
     }
 
-    /// Whether both credentials are present.
     static var hasCredentials: Bool {
         appKey != nil && appSecret != nil
     }
 
-    /// Migrate credentials from the old service name if present.
+    /// Migrates credentials from the legacy service name to the current one.
+    /// Called once at app launch. No-op if credentials already exist under the new name.
     static func migrateIfNeeded() {
         guard read(account: "appKey") == nil else { return }
 
@@ -46,17 +50,19 @@ enum CredentialsStore {
            let oldSecret = read(account: "appSecret", service: legacyService) {
             save(account: "appKey", value: oldKey)
             save(account: "appSecret", value: oldSecret)
+            // Clean up old entries
             delete(account: "appKey", service: legacyService)
             delete(account: "appSecret", service: legacyService)
         }
     }
 
-    // MARK: - Keychain Helpers
+    // MARK: - Keychain Operations
 
     @discardableResult
     private static func save(account: String, value: String, service svc: String = service) -> Bool {
         guard let data = value.data(using: .utf8) else { return false }
 
+        // Keychain doesn't support upsert — delete first, then add
         delete(account: account, service: svc)
 
         let query: [String: Any] = [

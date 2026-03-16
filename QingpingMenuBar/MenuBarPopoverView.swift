@@ -1,3 +1,10 @@
+// MenuBarPopoverView.swift
+// The main popover UI shown when the user clicks the menu bar icon.
+// Contains the header (device name, battery, staleness), sensor rows with sparklines,
+// expandable Swift Charts detail views, settings panel, and footer controls.
+// Also defines supporting types: SensorRow, ExpandedChartView, SparklineView,
+// Trend, MenuBarMetric, TemperatureUnit, and their UserDefaults-backed settings.
+
 import SwiftUI
 import ServiceManagement
 import Charts
@@ -335,6 +342,8 @@ struct MenuBarPopoverView: View {
 
 // MARK: - Sensor Row with Sparkline
 
+/// A single metric row showing title, value, trend arrow, and a sparkline.
+/// Tapping expands it to show an interactive Swift Charts detail view.
 struct SensorRow: View {
     let title: String
     let icon: String
@@ -407,6 +416,8 @@ struct SensorRow: View {
 
 // MARK: - Expanded Chart View
 
+/// Interactive 24h chart using Swift Charts. Shows threshold-colored line segments
+/// with Catmull-Rom interpolation and a hover cursor with tooltip annotation.
 struct ExpandedChartView: View {
     let points: [HistoryPoint]
     let unit: String
@@ -430,7 +441,8 @@ struct ExpandedChartView: View {
         return dataMax + pad
     }
 
-    /// Split points into segments of the same threshold color, overlapping by one point for continuity.
+    /// Splits points into runs of the same threshold color. Adjacent segments overlap
+    /// by one point so the line appears continuous across color transitions.
     private var segments: [ChartSegment] {
         guard points.count >= 2 else { return [] }
         var result: [ChartSegment] = []
@@ -566,13 +578,16 @@ struct ExpandedChartView: View {
     }
 }
 
+/// A contiguous run of history points sharing the same threshold color.
 nonisolated struct ChartSegment {
     let color: Color
     let points: [HistoryPoint]
 }
 
-// MARK: - Sparkline View (threshold-colored segments)
+// MARK: - Sparkline View
 
+/// Compact line chart drawn with Canvas. Each segment between consecutive points
+/// is colored by its threshold level, giving a quick visual of quality over time.
 struct SparklineView: View {
     let points: [HistoryPoint]
     let thresholdColor: (Double) -> Color
@@ -608,6 +623,8 @@ struct SparklineView: View {
 
 // MARK: - Trend
 
+/// Indicates whether a metric is rising, falling, or stable over the last hour.
+/// Compares the average of the most recent hour to the average of the prior hours.
 nonisolated enum Trend {
     case rising
     case falling
@@ -655,6 +672,7 @@ nonisolated enum Trend {
 
 // MARK: - Menu Bar Metric
 
+/// Which sensor metric to display in the menu bar icon.
 enum MenuBarMetric: String, CaseIterable, Identifiable {
     case co2 = "co2"
     case pm25 = "pm25"
@@ -689,6 +707,8 @@ enum MenuBarMetricSetting {
 
 // MARK: - Temperature Unit
 
+/// Display unit for temperature. The API always returns Celsius;
+/// conversion to Fahrenheit is done client-side for display only.
 enum TemperatureUnit: String, CaseIterable, Identifiable {
     case celsius = "celsius"
     case fahrenheit = "fahrenheit"
@@ -726,6 +746,8 @@ enum TemperatureUnitSetting {
 
 // MARK: - Poll Settings
 
+/// How often the app polls the Qingping API for new data.
+/// The device uploads every 10 min, but we poll every 60s to catch uploads promptly.
 enum PollSettings {
     static let interval: TimeInterval = 60
 }

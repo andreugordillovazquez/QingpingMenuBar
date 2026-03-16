@@ -1,11 +1,21 @@
+// QingpingAPIClient.swift
+// Actor-isolated HTTP client for the Qingping (Cleargrass) Cloud API.
+// Handles OAuth2 client credentials flow, device data fetching, settings updates,
+// and paginated 24h history retrieval. Uses an ephemeral URLSession to avoid
+// caching API responses to disk.
+
 import Foundation
 
 actor QingpingAPIClient {
+
+    // MARK: - Endpoints
 
     private static let tokenURL = URL(string: "https://oauth.cleargrass.com/oauth2/token")!
     private static let devicesURL = URL(string: "https://apis.cleargrass.com/v1/apis/devices")!
     private static let settingsURL = URL(string: "https://apis.cleargrass.com/v1/apis/devices/settings")!
     private static let historyURL = URL(string: "https://apis.cleargrass.com/v1/apis/devices/data")!
+
+    // MARK: - State
 
     private var cachedToken: String?
     private var tokenExpiry: Date = .distantPast
@@ -15,8 +25,9 @@ actor QingpingAPIClient {
         self.session = session
     }
 
-    // MARK: - Public
+    // MARK: - Public API
 
+    /// Fetches the latest reading from the first device on the account.
     func fetchLatestReading(appKey: String, appSecret: String) async throws -> (AirQualityReading, Device) {
         let token = try await getToken(appKey: appKey, appSecret: appSecret)
         let devices = try await fetchDevices(token: token)
@@ -29,11 +40,7 @@ actor QingpingAPIClient {
         return (reading, device)
     }
 
-    func fetchAllDevices(appKey: String, appSecret: String) async throws -> [Device] {
-        let token = try await getToken(appKey: appKey, appSecret: appSecret)
-        return try await fetchDevices(token: token)
-    }
-
+    /// Updates device reporting and collection intervals.
     func updateDeviceSettings(
         appKey: String,
         appSecret: String,
@@ -65,7 +72,8 @@ actor QingpingAPIClient {
         try validateResponse(response, data: data)
     }
 
-    /// Fetch 24h historical data for a device.
+    /// Fetches 24h of historical data, paginating in batches of 200 points.
+    /// Capped at 20 pages (4000 points) as a safety limit.
     func fetchHistory(appKey: String, appSecret: String, mac: String) async throws -> [HistoryDataPoint] {
         let token = try await getToken(appKey: appKey, appSecret: appSecret)
 
@@ -102,12 +110,12 @@ actor QingpingAPIClient {
 
             allPoints.append(contentsOf: points)
 
-            // If we got fewer than 200, we've reached the end
+            // Fewer than 200 means we've reached the end of available data
             if points.count < 200 {
                 break
             }
 
-            // Move start past the latest point we got
+            // Advance past the last returned timestamp to fetch the next page
             if let lastTimestamp = points.last?.timestamp?.value {
                 currentStart = lastTimestamp + 1
             } else {
@@ -118,9 +126,12 @@ actor QingpingAPIClient {
         return allPoints
     }
 
-    // MARK: - Token
+    // MARK: - OAuth Token
 
+    /// Returns a cached token if still valid, otherwise fetches a new one.
+    /// Uses HTTP Basic auth with base64-encoded appKey:appSecret.
     private func getToken(appKey: String, appSecret: String) async throws -> String {
+        // Return cached token if it won't expire in the next 60 seconds
         if let token = cachedToken, tokenExpiry > Date().addingTimeInterval(60) {
             return token
         }
@@ -171,23 +182,25 @@ actor QingpingAPIClient {
             let deviceResponse = try JSONDecoder().decode(DeviceListResponse.self, from: data)
             return deviceResponse.devices
         } catch {
-            print("[QingpingAPI] Decoding error: \(error)")
             throw QingpingError.decodingFailed(detail: String(describing: error))
         }
     }
 
     // MARK: - Helpers
 
+    /// Validates that the response is a successful HTTP status (2xx).
     private func validateResponse(_ response: URLResponse, data: Data? = nil) throws {
         guard let http = response as? HTTPURLResponse else {
             throw QingpingError.invalidResponse
         }
         guard (200...299).contains(http.statusCode) else {
+            // Store body for debugging but don't expose it in user-facing error messages
             let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? "no body"
             throw QingpingError.httpError(statusCode: http.statusCode, body: body)
         }
     }
 
+    /// Converts raw DeviceData into a flat AirQualityReading for the UI.
     private func mapToReading(_ data: DeviceData) -> AirQualityReading {
         let date: Date
         if let ts = data.timestamp?.value {
@@ -211,6 +224,8 @@ actor QingpingAPIClient {
 
 // MARK: - Errors
 
+/// API errors with user-friendly descriptions. The HTTP error intentionally
+/// hides the response body from the user to avoid leaking internal API details.
 nonisolated enum QingpingError: LocalizedError, Sendable {
     case invalidCredentials
     case invalidResponse

@@ -1,3 +1,8 @@
+// AirQualityViewModel.swift
+// Central state manager for the app. Owns the API client, drives 60-second polling,
+// and publishes all observable state that the menu bar label and popover consume.
+// Uses @Observable (not ObservableObject) for Swift 6.2 compatibility.
+
 import Foundation
 import SwiftUI
 
@@ -5,7 +10,7 @@ import SwiftUI
 @MainActor
 final class AirQualityViewModel {
 
-    // MARK: - State
+    // MARK: - Observable State (drives UI updates)
 
     var reading: AirQualityReading = .placeholder
     var deviceName: String = "—"
@@ -23,12 +28,12 @@ final class AirQualityViewModel {
     var temperatureUnit: TemperatureUnit = .current
     var isDeviceOffline: Bool = false
 
-    /// Reading is older than 15 minutes.
+    /// Reading is considered stale if older than 15 minutes.
     var isStale: Bool {
         reading != .placeholder && Date().timeIntervalSince(reading.timestamp) > 900
     }
 
-    // MARK: - Private
+    // MARK: - Private (not observed — won't trigger view redraws)
 
     private let api = QingpingAPIClient()
     private var timer: Timer?
@@ -44,6 +49,7 @@ final class AirQualityViewModel {
 
     // MARK: - Polling
 
+    /// Kicks off an immediate refresh and starts a repeating 60-second timer.
     func startPolling() {
         Task { await refresh() }
 
@@ -62,6 +68,8 @@ final class AirQualityViewModel {
 
     // MARK: - Refresh
 
+    /// Fetches the latest reading from the API, updates state, and triggers
+    /// history fetch + device settings push if needed.
     func refresh() async {
         guard let appKey = CredentialsStore.appKey,
               let appSecret = CredentialsStore.appSecret else {
@@ -86,11 +94,13 @@ final class AirQualityViewModel {
                 ?? "Qingping Monitor"
             lastUpdated = .now
 
+            // On first successful fetch, push optimal device settings (once per app session)
             if !hasPushedDeviceSettings {
                 hasPushedDeviceSettings = true
                 await pushOptimalDeviceSettings()
             }
 
+            // Refresh 24h history at most every 10 minutes
             if Date().timeIntervalSince(lastHistoryFetch) > 600 {
                 await fetchHistory()
             }
@@ -103,6 +113,7 @@ final class AirQualityViewModel {
 
     // MARK: - History
 
+    /// Loads 24h of historical data and splits it into per-metric arrays for charting.
     func fetchHistory() async {
         guard let appKey = CredentialsStore.appKey,
               let appSecret = CredentialsStore.appSecret,
@@ -116,6 +127,7 @@ final class AirQualityViewModel {
             )
             lastHistoryFetch = .now
 
+            // Split raw history into per-metric arrays
             co2History = points.compactMap { p in
                 guard let ts = p.timestamp?.value, let v = p.co2?.value else { return nil }
                 return HistoryPoint(timestamp: Date(timeIntervalSince1970: TimeInterval(ts)), value: v)
@@ -137,15 +149,13 @@ final class AirQualityViewModel {
                 return HistoryPoint(timestamp: Date(timeIntervalSince1970: TimeInterval(ts)), value: v)
             }
 
-            // Cap history to most recent 500 points to limit memory
+            // Cap each array to prevent unbounded memory growth over long runtimes
             let maxPoints = 500
             if co2History.count > maxPoints { co2History = Array(co2History.suffix(maxPoints)) }
             if pm25History.count > maxPoints { pm25History = Array(pm25History.suffix(maxPoints)) }
             if pm10History.count > maxPoints { pm10History = Array(pm10History.suffix(maxPoints)) }
             if tempHistory.count > maxPoints { tempHistory = Array(tempHistory.suffix(maxPoints)) }
             if humidityHistory.count > maxPoints { humidityHistory = Array(humidityHistory.suffix(maxPoints)) }
-
-            print("[QingpingMenuBar] Loaded \(points.count) history points")
         } catch {
             print("[QingpingMenuBar] Failed to load history: \(error.localizedDescription)")
         }
@@ -153,6 +163,8 @@ final class AirQualityViewModel {
 
     // MARK: - Device Settings
 
+    /// Sets the device to report every 10 min and record every 1 min (fastest allowed).
+    /// Only called once per app session on first successful data fetch.
     private func pushOptimalDeviceSettings() async {
         guard let appKey = CredentialsStore.appKey,
               let appSecret = CredentialsStore.appSecret,
@@ -166,7 +178,6 @@ final class AirQualityViewModel {
                 reportInterval: 600,
                 collectInterval: 60
             )
-            print("[QingpingMenuBar] Device intervals set to optimal: upload=600s, collect=60s")
         } catch {
             print("[QingpingMenuBar] Failed to set device intervals: \(error.localizedDescription)")
         }
