@@ -19,10 +19,17 @@ actor QingpingAPIClient {
 
     private var cachedToken: String?
     private var tokenExpiry: Date = .distantPast
-    private let session: URLSession
+    private var session: URLSession
 
-    init(session: URLSession = URLSession(configuration: .ephemeral)) {
-        self.session = session
+    init() {
+        self.session = URLSession(configuration: .ephemeral)
+    }
+
+    /// Creates a fresh URLSession, discarding any stale connections (e.g. after wake from sleep).
+    func resetSession() {
+        session.invalidateAndCancel()
+        session = URLSession(configuration: .ephemeral)
+        cachedToken = nil
     }
 
     // MARK: - Public API

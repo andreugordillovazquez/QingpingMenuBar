@@ -5,6 +5,7 @@
 
 import Foundation
 import SwiftUI
+import AppKit
 
 @Observable
 @MainActor
@@ -45,6 +46,20 @@ final class AirQualityViewModel {
 
     init() {
         startPolling()
+
+        // Restart polling after wake from sleep — Timer doesn't survive sleep/wake cycles
+        NotificationCenter.default.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // Reset the HTTP session — stale connections don't survive sleep
+                await self.api.resetSession()
+                self.startPolling()
+            }
+        }
     }
 
     // MARK: - Polling
@@ -85,6 +100,10 @@ final class AirQualityViewModel {
                 appKey: appKey,
                 appSecret: appSecret
             )
+
+            let age = Date().timeIntervalSince(newReading.timestamp)
+            print("[QingpingMenuBar] Refresh: CO2=\(newReading.co2.map { "\(Int($0))" } ?? "nil") PM2.5=\(newReading.pm25.map { "\(Int($0))" } ?? "nil") Temp=\(newReading.temperature.map { String(format: "%.1f", $0) } ?? "nil") Humidity=\(newReading.humidity.map { String(format: "%.0f", $0) } ?? "nil") age=\(String(format: "%.0f", age))s offline=\(device.info.status?.offline ?? false)")
+
             reading = newReading
             deviceMac = device.info.mac
             isDeviceOffline = device.info.status?.offline ?? false
